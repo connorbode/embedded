@@ -7,6 +7,7 @@
 #include <util/delay.h>
 #include "usb_serial.h"
 #include <string.h>
+#include <stdio.h>
 
 
 /**
@@ -16,14 +17,33 @@
 	Timer1 has been set up properly to set the intensity of the two LEDs.  Pins PB6 (pin 1) and 
 	PB7 (pin 2) have been used.
 
-	Everything just needs to be documented.. 
+
+
+	I was just in the process of setting up Timer0 to control interrupts.  My idea is as follows:
+
+		(1) Clock is running at 16MHz
+
+		(2) Timer0 is running at (clk / 1024)
+
+		(3) Figure out how often the Timer0 interrupt is fired (in seconds)
+
+		(4) Record how many seconds have elapsed based on how many interrupts have been fired
+
+		(5) Blink the pin based on the number of interrupts that have been fired & based on the
+			blink interval. 
+
+	Serial communication has been set up to set the intensity.  However, both pins are set to the
+	same intensity and nothing is done to set the blink interval.  This will have to be modified
+	slightly.
 
 **/
 
 
-char SERIAL_READ_TOO_LONG[100] = "Serial data exceeded buffer length of 100 characters.  The data was trimmed.\n";
+char SERIAL_READ_TOO_LONG[100] 	 = "Serial data exceeded buffer length of 100 characters.  The data was trimmed.\n";
 char SETTING_OUTPUT_COMPARE[100] = "Setting output compare.\n";
-char INPUT_NOT_UNDERSTOOD[200] = "The input you provided was not understood.\n Please enter [pin]_[action]_[value], where:\n - pin is 1 or 2\n - action is F or I\n - value is an appropriate frequency or intensity value\n\n";
+char READ_FROM_ANALOG[100] 		 = "Read the following value from analog in: ";
+char NEWLINE 				     = '\n';
+char INPUT_NOT_UNDERSTOOD[200] 	 = "The input you provided was not understood.\n Please enter [pin]_[action]_[value], where:\n - pin is 1 or 2 or 3\n - action is F or I\n - value is an appropriate frequency or intensity value\n\n";
 
 char buffer[100]; 					// input buffer for reading from serial
 int i = 0;							// counter for input buffer
@@ -39,6 +59,9 @@ int pin2_blink_interval = 1000; 	// the interval at which pin2 blinks (in ms)
 
 int pin1_cycle_counter = 0;			// counts the number of clock cycles that have passed (used for blink interval)
 int pin2_cycle_counter = 0;			// counts the number of clock cycles that have passed (used for blink interval)
+int read_cycle_counter = 0; 		// counts the number of clock ...
+
+int read_interval = 1000;
 
 
 
@@ -51,6 +74,36 @@ void badInput () {
 }
 
 
+//
+// ADC READ
+//
+uint16_t adc_read(uint8_t ch)
+{
+	
+	//Set internal reference
+    ADMUX=(1<<REFS0);
+	
+	//Enable, set prescale 
+    ADCSRA=(1<<ADEN)|(1<<ADPS2)|(1<<ADPS1)|(1<<ADPS0); 
+
+	//Input channel
+    ch = ch & 0b00000111;
+    ADMUX|=ch;
+
+	//Single conversion
+    ADCSRA|=(1<<ADSC);
+
+	//Wait for conversion to complete
+    while(!(ADCSRA & (1<<ADIF)));
+
+	//Clear ADIF by writing one to it
+    ADCSRA|=(1<<ADIF);
+ 
+ 	//return 16 bit value
+    return(ADC);
+}
+
+
 int main(void)
 {
 
@@ -59,6 +112,15 @@ int main(void)
 
 	// initialize serial communication
 	usb_init();
+
+
+
+	/**
+	 * Analog read
+	 */
+
+	// set pin to input mode
+	DDRF |= (0<<PF0);
 
 
 
@@ -143,6 +205,11 @@ int main(void)
 				pin2_cycle_counter = 0;
 			}
 
+			else if (buffer[0] == '3' && buffer[2] == 'F') {
+				read_interval = val;
+				read_cycle_counter = 0;
+			}
+
 			else {
 				badInput();
 			}
@@ -161,6 +228,7 @@ ISR(TIMER0_OVF_vect)
 	// this interrupt fires once every 7ms
 	int pin1_ms = pin1_cycle_counter / 7;
 	int pin2_ms = pin2_cycle_counter / 7;
+	int read_ms = read_cycle_counter / 7;
 
 	// check if we've just crossed the threshold
 	if (pin1_ms > pin1_blink_interval) {
@@ -192,7 +260,21 @@ ISR(TIMER0_OVF_vect)
 		pin2_cycle_counter = 0;
 	}
 
+	// check if we've crossed the threshold
+	if (read_ms > read_interval) {
+		uint16_t read_int = adc_read(PF0);
+		char read_value[6] = {0};
+		sprintf(read_value, "%d", read_int);
+
+		usb_serial_write(READ_FROM_ANALOG, strlen(READ_FROM_ANALOG));
+		usb_serial_write(read_value, strlen(read_value));
+		usb_serial_putchar(NEWLINE);
+
+		read_cycle_counter = 0;
+	}
+
 	// increment both cycle counters
 	pin1_cycle_counter += 1;
 	pin2_cycle_counter += 1;
+	read_cycle_counter += 1;
 }	
