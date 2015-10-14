@@ -5,36 +5,113 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <util/delay.h>
-#include "usb_serial.h"
 #include <string.h>
 #include <stdio.h>
+#include "usb_serial.h"
 
 
 /**
 
+  Author:
+
+  	Connor Bode
+  	#26281060
+
+  	
+
+  Pre-stuff:
+
+  	Sorry for ignoring the request to answer questions embedded in the .doc file, but I had
+  	already followed the instructions in question 2, answering both questions "in the same program".
+  	I decided it would be much easier and cleaner for YOU to read if I just wrote a lot of
+  	doc within the code comments.
+
+
+
+  Contents:
+
+  	"Question 1" - Describes hardware setup & tasks for question 1
+
+  	"Question 2" - Describes hardware setup & tasks for question 2
+
+  	"Timing" - Describes how timing is achieved for different tasks
+
+
+
   Question 1
 
-	Timer1 has been set up properly to set the intensity of the two LEDs.  Pins PB6 (pin 1) and 
-	PB7 (pin 2) have been used.
+  	Hardware setup:
+
+  		- PB5: Connect to LED (this pin is known as "pin 1")
+  		- PB6: Connect to LED (this pin is known as "pin 2")
+
+  	Commands:
+
+  		- 1_I_[val]: Will set the intensity of pin 1 to val, where val is an integer between 0 and 255.
+  		- 2_I_[val]: Will set the intensity of pin 2 to val, where val is an integer between 0 and 255.
+  		- 1_F_[val]: Will set the frequency of pin 1's flashing to [val] ms, where val is an integer.
+  		- 2_F_[val]: Will set the frequency of pin 2's flashing to [val] ms, where val is an integer.
+
+	Details:
+
+		PB5 and PB6 are set to output mode.
+
+		Timer1 is set to PWM with phase correct, clear on compare match when counting up, set on compare
+		match when counting down, prescaled to the clock speed.  The OC1A and OC1B registers are set,
+		setting the intensity of PB5 and PB6.
+
+		Timer0's interrupt is used to handle the blinking of the
+		pins.  Commands set a timing interval for the blinking of each pin.
 
 
+	
 
-	I was just in the process of setting up Timer0 to control interrupts.  My idea is as follows:
+
+  Question 2
+
+  	Hardware setup:
+
+  		- PF0: This pin is used as analog input.  It should be connected to an analog signal.
+  				(this pin is known as "pin 3")
+
+  	Commands:
+
+  		- 3_F_[al]: Will set the frequency of reading from pin 3 and printing to serial to [val] ms,
+  				where val is an integer.
+
+  	Details:
+
+  		PF0 is set to input mode.  
+
+		Timer0's interrupt is used to handle how often the pin is read from.  Commands set a timing
+		interval for the reading of the pin.
+
+
+  Timing
+
+	Timer0 gets prescaled to clk / 8, and the Timer0 Interrupt fires once every 7ms:
 
 		(1) Clock is running at 16MHz
 
-		(2) Timer0 is running at (clk / 1024)
+		(2) Timer0 is running at (clk / 8)
 
-		(3) Figure out how often the Timer0 interrupt is fired (in seconds)
+		(3) Timer0 overflows once approximately every 7ms:
 
-		(4) Record how many seconds have elapsed based on how many interrupts have been fired
+			(a) The clock ticks 16 * 10^6 times per second
 
-		(5) Blink the pin based on the number of interrupts that have been fired & based on the
-			blink interval. 
+			(b) Timer0 is prescaled to clk / 8, so it increments once every 8 clock ticks, (16 * 10^6 / 8) times per second
 
-	Serial communication has been set up to set the intensity.  However, both pins are set to the
-	same intensity and nothing is done to set the blink interval.  This will have to be modified
-	slightly.
+			(c) Timer0 is 8 bits, so it will overflow after 2^8 increments, or (16 * 10^6 / 8 / 2^8) times per second
+
+			(d) This means we have an overflow once every (16 * 10^6 / 8 / 2^8 / 1000) ~= 7.812ms.
+				We'll round this to 7ms, noting the loss in precision.
+
+	Each "task" (e.g. pins blinking, analog read) has an interval and a number of interrupt fires that have elapsed since
+	the last time the task was invoked. using the method described above, we can calculate the number of milliseconds
+	that have elapsed since the last time the task was invoked.  If the time elapsed exceeds the interval time, the task
+	is invoked and the interrupt fires elapsed is zeroed. 
+
+	
 
 **/
 
@@ -75,31 +152,29 @@ void badInput () {
 
 
 //
-// ADC READ
+// This function reads from an ADC channel
 //
 uint16_t adc_read(uint8_t ch)
 {
 	
-	//Set internal reference
-    ADMUX=(1<<REFS0);
+	// set reference
+    ADMUX |= (1<<REFS0);
 	
-	//Enable, set prescale 
-    ADCSRA=(1<<ADEN)|(1<<ADPS2)|(1<<ADPS1)|(1<<ADPS0); 
+	// enable adc 
+    ADCSRA |= (1<<ADEN);
 
-	//Input channel
-    ch = ch & 0b00000111;
-    ADMUX|=ch;
+    // prescale adc
+    ADCSRA |= (1<<ADPS2)|(1<<ADPS1)|(1<<ADPS0); 
 
-	//Single conversion
+	// set input channel
+    ADMUX |= ch;
+
+	// start conversion
     ADCSRA|=(1<<ADSC);
 
-	//Wait for conversion to complete
+	// wait for conversion to complete
     while(!(ADCSRA & (1<<ADIF)));
 
-	//Clear ADIF by writing one to it
-    ADCSRA|=(1<<ADIF);
- 
- 	//return 16 bit value
     return(ADC);
 }
 
@@ -140,7 +215,7 @@ int main(void)
 	TCCR1A |= (0<<COM1A0) | (1<<COM1A1);
 	TCCR1A |= (0<<COM1B0) | (1<<COM1B1);
 
-	// set no prescaling
+	// prescale to clk 
 	TCCR1B |= (1<<CS10) | (0<<CS11) | (0<<CS12);
 
 
